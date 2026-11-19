@@ -37,6 +37,46 @@ void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_ADC1_Init(void);
 
+/* Hardware Test Function */
+void Test_DHT22_Hardware(void) {
+    GPIO_InitTypeDef GPIO_InitStruct = {0};
+
+    LCD_Clear();
+    LCD_SetCursor(0,0); LCD_Print("Testing DHT22 HW");
+    HAL_Delay(1000);
+
+    // Test 1: Set as output and toggle
+    LCD_SetCursor(1,0); LCD_Print("Output Test...");
+    GPIO_InitStruct.Pin = GPIO_PIN_0;
+    GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
+    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+    // Toggle pin - you should see voltage change on multimeter
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_SET);
+    HAL_Delay(500);
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_RESET);
+    HAL_Delay(500);
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_SET);
+
+    LCD_SetCursor(1,0); LCD_Print("Check 3.3V on PB0");
+    HAL_Delay(2000);
+
+    // Test 2: Set as input and read
+    LCD_SetCursor(1,0); LCD_Print("Input Test...   ");
+    GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+    GPIO_InitStruct.Pull = GPIO_PULLUP;
+    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+    HAL_Delay(500);
+    int pin_state = HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_0);
+    LCD_SetCursor(1,0); LCD_Printf("Pin State: %d   ", pin_state);
+    HAL_Delay(2000);
+
+    LCD_Clear();
+}
+
 /* ADC helpers */
 static uint16_t ADC_ReadOnce(void) {
   HAL_ADC_Start(&hadc1);
@@ -78,12 +118,14 @@ static uint8_t map_index(uint16_t x, uint16_t ref) {
   if (x >= high) return 100;
   return (uint8_t)(((int32_t)(x - low) * 100) / (high - low));
 }
+
 static const char* status_from_idx(uint8_t idx) {
   if (idx <= GOOD_THR) return "GOOD";
   if (idx <= MOD_THR)  return "MOD ";
   if (idx <= POOR_THR) return "POOR";
   return "HAZ ";
 }
+
 static void set_alerts(uint8_t idx, uint32_t tick) {
   HAL_GPIO_WritePin(LED_G_PORT, LED_G_PIN, (idx <= MOD_THR) ? GPIO_PIN_SET : GPIO_PIN_RESET);
 
@@ -105,34 +147,30 @@ static void set_alerts(uint8_t idx, uint32_t tick) {
 int main(void)
 {
   HAL_Init();
+  DWT_Delay_Init();
   SystemClock_Config();
 
   MX_GPIO_Init();
   MX_ADC1_Init();
-
-  /* Initialize DWT for microsecond delay used by DHT driver */
-  if (DWT_Delay_Init() != HAL_OK) {
-    /* still continue; DHT may be unreliable without DWT, but we show a message */
-    LCD_Init();
-    LCD_Clear();
-    LCD_SetCursor(0,0);
-    LCD_Print("DWT init fail");
-    HAL_Delay(800);
-  }
 
   /* LCD startup */
   LCD_Init();
   LCD_Clear();
   LCD_SetCursor(0,0); LCD_Print("AQ Monitor");
   LCD_SetCursor(1,0); LCD_Print("Starting...");
-  HAL_Delay(800);
-  LCD_Clear();
+  HAL_Delay(1000);
+
+  /* Run hardware test */
+  Test_DHT22_Hardware();
 
   /* Prime ADC filter and baseline */
   Filter_Prime();
   adcCleanRef = adcFiltered;
 
   DHT22_Data d = {0};
+  uint32_t error_count = 0;
+  uint32_t timeout_count = 0;
+  uint32_t checksum_count = 0;
 
   while (1)
   {
@@ -143,58 +181,66 @@ int main(void)
     uint8_t idx = map_index(adcFiltered, adcCleanRef);
     set_alerts(idx, now);
 
-    /* DHT22 read; if errors happen often, slow this down to 1s+ */
+    /* DHT22 read */
     HAL_StatusTypeDef dh = DHT22_Read(&d);
 
     /* LCD update */
     LCD_SetCursor(0,0);
-    LCD_Printf("AQ:%03u%% %s", idx, status_from_idx(idx));
-    LCD_SetCursor(1,0);
     if (dh == HAL_OK) {
       int tC = d.temp10/10, tC1 = d.temp10%10;
       int h  = d.hum10/10,  h1 = d.hum10%10;
       LCD_Printf("T:%2d.%1dC H:%2d.%1d%%", tC, tC1, h, h1);
     } else {
-      LCD_Print("DHT ERR         ");
+      error_count++;
+      if (dh == HAL_TIMEOUT) {
+        timeout_count++;
+        LCD_Printf("TIMEOUT %lu    ", timeout_count);
+      } else if (dh == HAL_ERROR) {
+        checksum_count++;
+        LCD_Printf("CHECKSUM %lu   ", checksum_count);
+      } else {
+        LCD_Printf("ERROR %lu      ", error_count);
+      }
     }
 
-    HAL_Delay(300);
+    /* Show AQ on second line */
+    LCD_SetCursor(1,0);
+    LCD_Printf("AQ:%03u%% %s", idx, status_from_idx(idx));
+
+    HAL_Delay(2000);
   }
 }
 
 /* ------------------------- Generated functions --------------------------- */
-/* The CubeMX-generated SystemClock_Config(), MX_GPIO_Init(), MX_ADC1_Init()
-   are included below. Only the PA0 GPIO init has been set to ANALOG (required
-   for ADC). If you regenerated code from CubeMX afterwards, ensure PA0 is
-   still analog.  */
 
 void SystemClock_Config(void)
 {
-  RCC_OscInitTypeDef RCC_OscInitStruct = {0};
-  RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
-  RCC_PeriphCLKInitTypeDef PeriphClkInit = {0};
+	  RCC_OscInitTypeDef RCC_OscInitStruct = {0};
+	  RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+	  RCC_PeriphCLKInitTypeDef PeriphClkInit = {0};
 
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
-  RCC_OscInitStruct.HSIState = RCC_HSI_ON;
-  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
-  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
-  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
-  RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL9;
-  RCC_OscInitStruct.PLL.PREDIV = RCC_PREDIV_DIV1;
-  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) { Error_Handler(); }
+	  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
+	  RCC_OscInitStruct.HSIState = RCC_HSI_ON;
+	  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
+	  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
+	  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
+	  RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL9;
+	  RCC_OscInitStruct.PLL.PREDIV = RCC_PREDIV_DIV1;
+	  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) { Error_Handler(); }
 
-  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
-                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
-  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
-  RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
-  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
-  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK) { Error_Handler(); }
+	  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
+	                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
+	  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
+	  RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
+	  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
+	  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
+	  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK) { Error_Handler(); }
 
-  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_ADC12;
-  PeriphClkInit.Adc12ClockSelection = RCC_ADC12PLLCLK_DIV1;
-  if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK) { Error_Handler(); }
-}
+	  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_ADC12;
+	  PeriphClkInit.Adc12ClockSelection = RCC_ADC12PLLCLK_DIV1;
+	  if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK) { Error_Handler(); }
+	}
+
 
 /* ADC init (generated) */
 static void MX_ADC1_Init(void)
@@ -233,41 +279,32 @@ static void MX_ADC1_Init(void)
 /* GPIO init (generated) -- PA0 set to ANALOG for ADC */
 static void MX_GPIO_Init(void)
 {
-  GPIO_InitTypeDef GPIO_InitStruct = {0};
+	 GPIO_InitTypeDef GPIO_InitStruct = {0};
 
-  __HAL_RCC_GPIOA_CLK_ENABLE();
-  __HAL_RCC_GPIOB_CLK_ENABLE();
+	    __HAL_RCC_GPIOA_CLK_ENABLE();
+	    __HAL_RCC_GPIOB_CLK_ENABLE();
 
-  /* PA0 as analog for ADC1_IN1 */
-  GPIO_InitStruct.Pin = GPIO_PIN_0;
-  GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+	    /* PA0 as analog (for ADC1_IN1) */
+	    GPIO_InitStruct.Pin = GPIO_PIN_0;
+	    GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
+	    GPIO_InitStruct.Pull = GPIO_NOPULL;
+	    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-  /* Configure PA5, PA6, PA8 as outputs */
-  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5|GPIO_PIN_6|GPIO_PIN_8, GPIO_PIN_RESET);
-  GPIO_InitStruct.Pin = GPIO_PIN_5|GPIO_PIN_6|GPIO_PIN_8;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+	    /* LCD pins PB8..PB13 */
+	    GPIO_InitStruct.Pin = GPIO_PIN_8|GPIO_PIN_9|GPIO_PIN_10|
+	                          GPIO_PIN_11|GPIO_PIN_12|GPIO_PIN_13;
+	    GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+	    GPIO_InitStruct.Pull = GPIO_NOPULL;
+	    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+	    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-  /* PB0 as input for DHT22 DATA */
-  GPIO_InitStruct.Pin = GPIO_PIN_0;
-  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-
-  /* LCD PB8..PB13 outputs */
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_10|GPIO_PIN_11|GPIO_PIN_12|GPIO_PIN_13
-                    |GPIO_PIN_8|GPIO_PIN_9, GPIO_PIN_RESET);
-  GPIO_InitStruct.Pin = GPIO_PIN_10|GPIO_PIN_11|GPIO_PIN_12|GPIO_PIN_13
-                        |GPIO_PIN_8|GPIO_PIN_9;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-}
+	    /* DHT22 PB0 — Start as INPUT with pull-up */
+	    GPIO_InitStruct.Pin = GPIO_PIN_0;
+	    GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+	    GPIO_InitStruct.Pull = GPIO_PULLUP;
+	    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
+	    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+	}
 
 /* Error handler and assert (keep generated) */
 void Error_Handler(void)
@@ -275,6 +312,7 @@ void Error_Handler(void)
   __disable_irq();
   while (1) { }
 }
+
 #ifdef  USE_FULL_ASSERT
 void assert_failed(uint8_t *file, uint32_t line)
 {
