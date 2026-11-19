@@ -37,6 +37,13 @@ void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_ADC1_Init(void);
 
+#ifndef RUN_HW_TEST
+#define RUN_HW_TEST 0   /* 1 = run the DHT22 pin self-test at boot */
+#endif
+
+#define LOOP_MS 100     /* gas reading and alarms update every 100 ms */
+#define DHT_MS  2000    /* DHT22 is rated for one reading every 2 s */
+
 /* Hardware Test Function */
 void Test_DHT22_Hardware(void) {
     GPIO_InitTypeDef GPIO_InitStruct = {0};
@@ -160,8 +167,10 @@ int main(void)
   LCD_SetCursor(1,0); LCD_Print("Starting...");
   HAL_Delay(1000);
 
-  /* Run hardware test */
+#if RUN_HW_TEST
+  /* Optional DHT22 pin self-test (set RUN_HW_TEST to 1 when debugging wiring) */
   Test_DHT22_Hardware();
+#endif
 
   /* Prime ADC filter and baseline */
   Filter_Prime();
@@ -171,6 +180,7 @@ int main(void)
   uint32_t error_count = 0;
   uint32_t timeout_count = 0;
   uint32_t checksum_count = 0;
+  uint32_t lastDht = 0;
 
   while (1)
   {
@@ -180,6 +190,10 @@ int main(void)
     Filter_Step();
     uint8_t idx = map_index(adcFiltered, adcCleanRef);
     set_alerts(idx, now);
+
+    /* DHT22 and LCD every DHT_MS; gas and alarms every LOOP_MS so the alarm blink stays smooth */
+    if (now - lastDht < DHT_MS && lastDht != 0) { HAL_Delay(LOOP_MS); continue; }
+    lastDht = now ? now : 1;
 
     /* DHT22 read */
     HAL_StatusTypeDef dh = DHT22_Read(&d);
@@ -207,7 +221,7 @@ int main(void)
     LCD_SetCursor(1,0);
     LCD_Printf("AQ:%03u%% %s", idx, status_from_idx(idx));
 
-    HAL_Delay(2000);
+    HAL_Delay(LOOP_MS);
   }
 }
 
@@ -297,6 +311,14 @@ static void MX_GPIO_Init(void)
 	    GPIO_InitStruct.Pull = GPIO_NOPULL;
 	    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
 	    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+	    /* Green LED PA5, red LED PA6, buzzer PA8 as outputs, starting off */
+	    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5|GPIO_PIN_6|GPIO_PIN_8, GPIO_PIN_RESET);
+	    GPIO_InitStruct.Pin = GPIO_PIN_5|GPIO_PIN_6|GPIO_PIN_8;
+	    GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+	    GPIO_InitStruct.Pull = GPIO_NOPULL;
+	    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+	    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
 	    /* DHT22 PB0 — Start as INPUT with pull-up */
 	    GPIO_InitStruct.Pin = GPIO_PIN_0;
